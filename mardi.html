@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>KTM → Mardi Himal via Ghandruk & Siding (Leaflet Planner)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<!-- Leaflet & LRM -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+
+<style>
+  :root{--bg:#0f172a;--panel:#111827;--text:#f8fafc;--muted:#9ca3af;--border:#1f2937;--drive:#22c55e;--foot:#60a5fa}
+  *{box-sizing:border-box}
+  body{margin:0;height:100vh;display:grid;grid-template-columns:360px 1fr;grid-template-rows:60px 1fr;grid-template-areas:"header header" "sidebar map";
+       background:#0f172a;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+  header{grid-area:header;display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--border);
+         background:rgba(17,24,39,.8);backdrop-filter:blur(6px)}
+  header h1{margin:0;font-size:16px}
+  #sidebar{grid-area:sidebar;overflow:auto;border-right:1px solid var(--border);background:linear-gradient(180deg,rgba(17,24,39,.85),rgba(17,24,39,.6))}
+  #map{grid-area:map}
+  .section-title{margin:12px 16px;font-size:14px}
+  ul#legs{list-style:none;margin:0;padding:0}
+  li.leg{padding:12px 16px;border-bottom:1px solid var(--border);cursor:pointer}
+  li.leg small{color:var(--muted)}
+  li.leg:hover{background:rgba(96,165,250,.15)}
+  li.leg.active{background:rgba(59,130,246,.25)}
+  .legend{padding:12px 16px;color:var(--muted);font-size:12px}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;border:1px solid rgba(255,255,255,.5);vertical-align:middle;margin-right:6px}
+  .leaflet-routing-container{display:none} /* hide default instruction box */
+  .pin{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.1);border:1px solid #3b3b3b;
+       box-shadow:0 2px 6px rgba(0,0,0,.35);backdrop-filter:blur(4px);font-size:16px}
+  .pin .lbl{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏔️ KTM → Ghandruk → High Camp → Viewpoint → Siding → Pokhara → KTM</h1>
+  <div style="font-size:12px;color:#cbd5e1">Road: <span style="color:#22c55e">green</span> • Trail: <span style="color:#60a5fa">blue</span></div>
+</header>
+
+<aside id="sidebar">
+  <h3 class="section-title">Itinerary (click to focus)</h3>
+  <ul id="legs"></ul>
+  <div class="legend">
+    <div><span class="sw" style="background:var(--drive)"></span>Driving / bus segments</div>
+    <div><span class="sw" style="background:var(--foot)"></span>Trekking segments</div>
+    <div style="margin-top:8px;">Routes via public OSRM (OpenStreetMap). Verify locally; mountain conditions change.</div>
+  </div>
+</aside>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.min.js"></script>
+<script>
+/* === Key points (approx) === */
+const KTM       = [27.7172, 85.3240];
+const Pokhara   = [28.2096, 83.9856];
+const Ghandruk  = [28.3620, 83.8100];  // overnight "further from Ghandruk" area
+const Forest    = [28.3440, 83.8380];
+const LowCamp   = [28.3680, 83.8450];
+const Badal     = [28.3830, 83.8460];
+const HighCamp  = [28.3990, 83.8475];
+const Viewpoint = [28.4140, 83.8530];
+const Siding    = [28.3329, 83.8766];
+
+/* === Legs per your plan === */
+const legs = [
+  { id: 0, title: "Kathmandu → Pokhara", mode: "drive",  wps: [KTM, Pokhara] },
+  { id: 1, title: "Pokhara → (stay) Ghandruk side", mode: "drive",  wps: [Pokhara, Ghandruk] },
+  { id: 2, title: "Trek: Ghandruk → Forest Camp → Low Camp → Badal Danda → (stay) High Camp", mode: "foot",
+    wps: [Ghandruk, Forest, LowCamp, Badal, HighCamp] },
+  { id: 3, title: "Sunrise: High Camp → Mardi Himal Viewpoint → back to High Camp", mode: "foot",
+    wps: [HighCamp, Viewpoint, HighCamp] },
+  { id: 4, title: "Descend: High Camp → Siding (Jeep road)", mode: "foot", wps: [HighCamp, Siding] },
+  { id: 5, title: "Siding → Pokhara (overnight)", mode: "drive",  wps: [Siding, Pokhara] },
+  { id: 6, title: "Pokhara → Kathmandu (next morning)", mode: "drive",  wps: [Pokhara, KTM] }
+];
+
+/* === Map setup === */
+const map = L.map('map', { zoomControl: true });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+}).addTo(map);
+
+/* Fit to everything */
+const all = legs.flatMap(l => l.wps.map(([lat,lng]) => L.latLng(lat,lng)));
+map.fitBounds(L.latLngBounds(all).pad(0.2));
+
+/* Routers */
+const osrmDrive = L.Routing.osrmv1({ serviceUrl: 'https://routing.openstreetmap.de/routed-car/route/v1' });
+const osrmFoot  = L.Routing.osrmv1({ serviceUrl: 'https://routing.openstreetmap.de/routed-foot/route/v1' });
+
+/* Context polyline (faint connector just to see overall shape) */
+L.polyline(all, { color:'#ffffff', weight:1, opacity:0.25, dashArray:'4,6' }).addTo(map);
+
+/* Stay markers (🏠) and key spots */
+const stays = [
+  { pos: Ghandruk,  label: "Stay (Ghandruk side) 🏠" },
+  { pos: HighCamp,  label: "Stay (High Camp) 🏠" },
+  { pos: Pokhara,   label: "Stay (Pokhara) 🏠" }
+];
+stays.forEach(s => {
+  L.marker(s.pos, { icon: L.divIcon({className:'', html:'<div class="pin">🏠</div>', iconSize:[28,28], iconAnchor:[14,14]}) })
+    .addTo(map).bindPopup(`<strong>${s.label}</strong>`);
+});
+
+/* Other useful markers */
+const poi = [
+  { pos: Viewpoint, label: "Mardi Himal Viewpoint ⛰️" },
+  { pos: Siding,    label: "Siding (Jeep out) 🚙" }
+];
+poi.forEach(p => {
+  L.marker(p.pos, { icon: L.divIcon({className:'', html:'<div class="pin">📍</div>', iconSize:[28,28], iconAnchor:[14,14]}) })
+    .addTo(map).bindPopup(`<strong>${p.label}</strong>`);
+});
+
+/* Active routing control */
+let active = null;
+function showLeg(i){
+  const leg = legs[i];
+  if(active){ map.removeControl(active); active = null; }
+
+  active = L.Routing.control({
+    waypoints: leg.wps.map(([lat,lng]) => L.latLng(lat,lng)),
+    router: leg.mode === 'foot' ? osrmFoot : osrmDrive,
+    addWaypoints: false,
+    draggableWaypoints: leg.mode === 'foot',  // allow slight tweak on trail if needed
+    show: false,
+    fitSelectedRoutes: true,
+    lineOptions: {
+      styles: [{ color: leg.mode === 'foot' ? getComputedStyle(document.documentElement).getPropertyValue('--foot').trim()
+                                      : getComputedStyle(document.documentElement).getPropertyValue('--drive').trim(),
+                 weight: 5, opacity: 0.95 }]
+    },
+    altLineOptions: { styles:[{ color:'#ffffff', weight:3, opacity:0.25, dashArray:'6,6' }] }
+  }).addTo(map);
+
+  // sidebar selection
+  document.querySelectorAll('li.leg').forEach(el => el.classList.remove('active'));
+  document.querySelector(`li.leg[data-i="${i}"]`)?.classList.add('active');
+}
+
+/* Sidebar build */
+const ul = document.getElementById('legs');
+legs.forEach((l,i) => {
+  const li = document.createElement('li');
+  li.className = 'leg';
+  li.dataset.i = i;
+  li.innerHTML = `<strong>${l.title}</strong><br><small>${l.mode === 'foot' ? 'Trek' : 'Drive/Bus'}</small>`;
+  li.onclick = () => showLeg(i);
+  ul.appendChild(li);
+});
+
+/* Start with Leg 0 (KTM → Pokhara) */
+showLeg(0);
+
+/* Keyboard nav ↑/↓ */
+document.addEventListener('keydown', (e) => {
+  const nodes = Array.from(document.querySelectorAll('li.leg'));
+  const idx = nodes.findIndex(n => n.classList.contains('active'));
+  if(e.key === 'ArrowDown') showLeg(Math.min(nodes.length-1, Math.max(0, idx+1)));
+  if(e.key === 'ArrowUp')   showLeg(Math.max(0, idx-1));
+});
+</script>
+</body>
+</html>
